@@ -1,14 +1,55 @@
 (function () {
     'use strict';
 
-    var CONFIG = {
-        addonUrl: 'https://strem.fun',
-        webtorSdkUrl: 'https://jsdelivr.net'
-    };
+    var PLUGIN_ID = 'stremio_webtor_cloud';
+    var DEFAULT_ADDON = 'https://strem.fun';
+    var FALLBACK_ADDON = 'https://strem.fun';
+    var WEBTOR_SDK = 'https://jsdelivr.net';
 
     var sdkLoaded = false;
 
-    // Carrega o SDK do Webtor apenas uma vez em segundo plano
+    // 1. Inicializa as configurações salvas no Lampa
+    function initSettings() {
+        Lampa.SettingsApi.addComponent({
+            component: PLUGIN_ID,
+            name: 'Cloud Grátis (Webtor)',
+            icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM10 17l5-4-5-4v8z"/></svg>'
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: PLUGIN_ID,
+            param: {
+                name: 'webtor_addon_url',
+                type: 'input',
+                values: '',
+                default: DEFAULT_ADDON
+            },
+            field: {
+                name: 'URL do Addon Stremio (manifest.json)',
+                description: 'Cole o link do Torrentio, Brazuca ou outro addon compatível'
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: PLUGIN_ID,
+            param: {
+                name: 'webtor_prioritize_ptbr',
+                type: 'trigger',
+                default: true
+            },
+            field: {
+                name: 'Priorizar Dublado / PT-BR no topo',
+                description: 'Destaca e move links em português para os primeiros lugares'
+            }
+        });
+    }
+
+    function getAddonUrl() {
+        var saved = Lampa.Storage.get('webtor_addon_url', DEFAULT_ADDON);
+        return (saved && saved.trim() !== '') ? saved.trim() : DEFAULT_ADDON;
+    }
+
+    // 2. Carrega o SDK do Webtor
     function carregarWebtorSDK(callback) {
         if (sdkLoaded || window.webtor) {
             sdkLoaded = true;
@@ -16,28 +57,30 @@
             return;
         }
         var script = document.createElement('script');
-        script.src = CONFIG.webtorSdkUrl;
+        script.src = WEBTOR_SDK;
         script.async = true;
         script.onload = function () {
             sdkLoaded = true;
             if (callback) callback();
+        };
+        script.onerror = function () {
+            Lampa.Noty.show('Falha ao carregar motor do Webtor. Verifique sua internet.');
         };
         document.head.appendChild(script);
     }
 
     function startPlugin() {
         var network = new Lampa.Reguest();
+        initSettings();
         carregarWebtorSDK();
 
-        // 1. Adiciona o botão na tela de detalhes do filme ou série
+        // 3. Adiciona o botão na tela de detalhes
         Lampa.Listener.follow('full', function (e) {
             if (e.type == 'complite') {
                 var render = e.object.activity.render();
-                
-                // Evita duplicar o botão se a tela recarregar
                 if (render.find('.view--online-free').length > 0) return;
 
-                var btn = $('<div class="full-start__button selector view--online-free" style="background: #2e7d32; margin-left: 10px;">' +
+                var btn = $('<div class="full-start__button selector view--online-free" style="background: linear-gradient(45deg, #1b5e20, #2e7d32); margin-left: 10px;">' +
                             '<span>Assistir Grátis (Cloud)</span>' +
                             '</div>');
 
@@ -49,16 +92,13 @@
             }
         });
 
-        // 2. Verifica se é filme ou série e garante que temos o IMDB ID
+        // 4. Obtém o IMDB ID e direciona para Filme ou Série
         function prepararBusca(movie) {
             var isSerie = Boolean(movie.first_air_date || movie.number_of_seasons);
 
             if (movie.imdb_id) {
-                if (isSerie) {
-                    selecionarTemporada(movie, movie.imdb_id);
-                } else {
-                    buscarStreams(movie, movie.imdb_id, null, null);
-                }
+                if (isSerie) selecionarTemporada(movie, movie.imdb_id);
+                else buscarStreams(movie, movie.imdb_id, null, null, false);
             } else {
                 Lampa.Loading.start();
                 var tipoTmdb = isSerie ? 'tv' : 'movie';
@@ -68,11 +108,8 @@
                     Lampa.Loading.stop();
                     if (res && res.imdb_id) {
                         movie.imdb_id = res.imdb_id;
-                        if (isSerie) {
-                            selecionarTemporada(movie, res.imdb_id);
-                        } else {
-                            buscarStreams(movie, res.imdb_id, null, null);
-                        }
+                        if (isSerie) selecionarTemporada(movie, res.imdb_id);
+                        else buscarStreams(movie, res.imdb_id, null, null, false);
                     } else {
                         Lampa.Noty.show('IMDB ID não encontrado para este título.');
                     }
@@ -83,14 +120,14 @@
             }
         }
 
-        // 3. Menu de Temporadas para Séries
+        // 5. Seletor de Temporada
         function selecionarTemporada(movie, imdbId) {
             var seasons = (movie.seasons || []).filter(function (s) {
                 return s.season_number > 0;
             });
 
             if (seasons.length === 0) {
-                Lampa.Noty.show('Nenhuma temporada disponível.');
+                Lampa.Noty.show('Nenhuma temporada encontrada.');
                 return;
             }
 
@@ -114,7 +151,7 @@
             });
         }
 
-        // 4. Menu de Episódios para Séries
+        // 6. Seletor de Episódio
         function selecionarEpisodio(movie, imdbId, seasonNum) {
             Lampa.Loading.start();
             var urlEp = Lampa.TMDB.api('tv/' + movie.id + '/season/' + seasonNum + '?api_key=' + Lampa.TMDB.key() + '&language=pt-BR');
@@ -138,7 +175,7 @@
                     title: 'Temporada ' + seasonNum + ' - Episódio',
                     items: items,
                     onSelect: function (item) {
-                        buscarStreams(movie, imdbId, seasonNum, item.episode_number);
+                        buscarStreams(movie, imdbId, seasonNum, item.episode_number, false);
                     },
                     onBack: function () {
                         selecionarTemporada(movie, imdbId);
@@ -150,8 +187,8 @@
             });
         }
 
-        // 5. Consulta o Addon do Stremio (Filme ou Série:Temporada:Episódio)
-        function buscarStreams(movie, imdbId, season, episode) {
+        // 7. Consulta o Addon com tentativa de Fallback automático
+        function buscarStreams(movie, imdbId, season, episode, isFallback) {
             Lampa.Loading.start(function () {
                 network.clear();
                 Lampa.Loading.stop();
@@ -159,7 +196,8 @@
 
             var tipo = season ? 'series' : 'movie';
             var queryId = season ? (imdbId + ':' + season + ':' + episode) : imdbId;
-            var baseUrl = CONFIG.addonUrl.replace('/manifest.json', '');
+            var currentAddon = isFallback ? FALLBACK_ADDON : getAddonUrl();
+            var baseUrl = currentAddon.replace('/manifest.json', '');
             var searchUrl = baseUrl + '/stream/' + tipo + '/' + queryId + '.json';
 
             network.silent(searchUrl, function (json) {
@@ -167,80 +205,43 @@
 
                 if (json && json.streams && json.streams.length > 0) {
                     mostrarListaOpcoes(json.streams, movie, season, episode);
+                } else if (!isFallback && currentAddon !== FALLBACK_ADDON) {
+                    Lampa.Noty.show('Buscando em fonte alternativa...');
+                    buscarStreams(movie, imdbId, season, episode, true);
                 } else {
-                    Lampa.Noty.show('Nenhuma fonte encontrada para esta seleção.');
+                    Lampa.Noty.show('Nenhuma fonte encontrada para este título.');
                 }
             }, function () {
                 Lampa.Loading.stop();
-                Lampa.Noty.show('Erro ao conectar com o servidor de busca.');
+                if (!isFallback && currentAddon !== FALLBACK_ADDON) {
+                    buscarStreams(movie, imdbId, season, episode, true);
+                } else {
+                    Lampa.Noty.show('Servidor de busca indisponível no momento.');
+                }
             });
         }
 
-        // 6. Lista os torrents encontrados para escolha do usuário
+        // 8. Ordena PT-BR no topo e exibe lista limpa na TV
         function mostrarListaOpcoes(streams, movie, season, episode) {
-            var items = streams.map(function (s) {
+            var priorizarPt = Lampa.Storage.get('webtor_prioritize_ptbr', true);
+            var regexPt = /(dublado|dual|pt-br|ptbr|portugues|nacional|legendado)/i;
+
+            var processed = streams.filter(function (s) {
+                return Boolean(s.infoHash);
+            }).map(function (s) {
+                var rawTitle = (s.title || s.name || '').replace(/\n/g, ' | ');
+                var isPt = regexPt.test(rawTitle) || regexPt.test(s.name || '');
                 return {
-                    title: s.title || s.name || 'Fonte Torrent',
-                    subtitle: s.name || 'Webtor Cloud',
+                    title: (isPt ? '[PT-BR] ' : '') + rawTitle,
+                    subtitle: (s.name || 'Torrent') + (s.fileIdx !== undefined ? ' • Arquivo #' + s.fileIdx : ''),
+                    isPt: isPt,
                     streamData: s
                 };
             });
 
-            Lampa.Select.show({
-                title: 'Escolha a qualidade / áudio',
-                items: items,
-                onSelect: function (item) {
-                    abrirPlayerWebtor(item.streamData, movie, season, episode);
-                },
-                onBack: function () {
-                    Lampa.Controller.toggle('content');
-                }
-            });
-        }
-
-        // 7. Abre o Player Embutido do Webtor em tela cheia
-        function abrirPlayerWebtor(stream, movie, season, episode) {
-            if (!stream.infoHash) {
-                Lampa.Noty.show('Link magnético inválido.');
-                return;
+            if (priorizarPt) {
+                processed.sort(function (a, b) {
+                    return (b.isPt === a.isPt) ? 0 : b.isPt ? 1 : -1;
+                });
             }
 
-            var magnet = 'magnet:?xt=urn:btih:' + stream.infoHash;
-            var tituloExibicao = (movie.title || movie.name) + (season ? (' - T' + season + 'E' + episode) : '');
-
-            // Cria uma camada em tela cheia por cima do Lampa
-            var overlay = $('<div id="webtor-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:99999; display:flex; flex-direction:column;">' +
-                            '<div style="padding:12px 20px; background:#111; color:#fff; display:flex; justify-content:space-between; align-items:center; font-size:18px;">' +
-                            '<span>' + tituloExibicao + '</span>' +
-                            '<span style="font-size:14px; color:#aaa;">Pressione VOLTAR no controle para sair</span>' +
-                            '</div>' +
-                            '<div id="webtor-player-box" style="flex:1; width:100%; height:100%;"></div>' +
-                            '</div>');
-
-            $('body').append(overlay);
-
-            // Registra o botão "Voltar" do controle remoto da TV para fechar o vídeo
-            Lampa.Controller.add('webtor_player', {
-                toggle: function () {},
-                back: function () {
-                    $('#webtor-overlay').remove();
-                    Lampa.Controller.toggle('content');
-                }
-            });
-            Lampa.Controller.toggle('webtor_player');
-
-            // Inicializa o vídeo dentro do contêiner
-            carregarWebtorSDK(function () {
-                window.webtor = window.webtor || [];
-                window.webtor.push({
-                    id: 'webtor-player-box',
-                    magnet: magnet,
-                    width: '100%',
-                    height: '100%',
-                    lang: 'pt',
-                    i18n: {
-                        en: {
-                            common: {
-                                "prepare to play": "Carregando vídeo na nuvem...",
-                            }
-                        }
