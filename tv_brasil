@@ -1,0 +1,182 @@
+(function () {
+    'use strict';
+
+    function iniciarTVBrasil() {
+        if (window.plugin_tv_brasil_ativo) return;
+        window.plugin_tv_brasil_ativo = true;
+
+        // URL pública com canais abertos do Brasil (M3U)
+        var URL_LISTA_BR = 'https://github.io';
+
+        // 1. Registra o componente visual (tela de canais) no Lampa
+        function TelaCanaisBR(object) {
+            var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250 });
+            var html = $('<div class="category-full"></div>');
+            var itens = [];
+
+            this.create = function () {
+                var self = this;
+                this.activity.loader(true);
+
+                // Baixa a lista M3U do Brasil
+                $.ajax({
+                    url: URL_LISTA_BR,
+                    dataType: 'text',
+                    success: function (textoM3U) {
+                        var canais = self.analisarM3U(textoM3U);
+                        self.renderizarCanais(canais);
+                        self.activity.loader(false);
+                    },
+                    error: function () {
+                        self.activity.loader(false);
+                        Lampa.Noty.show('Erro ao carregar a lista de canais do Brasil.');
+                    }
+                });
+
+                return this.render();
+            };
+
+            // Lê o arquivo M3U e extrai nome, logo e link do vídeo
+            this.analisarM3U = function (texto) {
+                var linhas = texto.split('\n');
+                var lista = [];
+                var canalAtual = null;
+
+                for (var i = 0; i < linhas.length; i++) {
+                    var linha = linhas[i].trim();
+
+                    if (linha.indexOf('#EXTINF:') === 0) {
+                        var matchNome = linha.split(',');
+                        var nome = matchNome.length > 1 ? matchNome[matchNome.length - 1].trim() : 'Canal BR';
+                        
+                        var matchLogo = linha.match(/tvg-logo="([^"]+)"/);
+                        var logo = matchLogo ? matchLogo[1] : '';
+
+                        canalAtual = { title: nome, img: logo, url: '' };
+                    } else if (linha.indexOf('http') === 0 && canalAtual) {
+                        canalAtual.url = linha;
+                        lista.push(canalAtual);
+                        canalAtual = null;
+                    }
+                }
+                return lista;
+            };
+
+            // Cria os cartões na tela para navegação com controle remoto
+            this.renderizarCanais = function (canais) {
+                var self = this;
+
+                if (canais.length === 0) {
+                    Lampa.Noty.show('Nenhum canal encontrado.');
+                    return;
+                }
+
+                canais.forEach(function (canal) {
+                    var card = Lampa.Template.get('card', {
+                        title: canal.title,
+                        release_year: 'Ao Vivo • PT-BR'
+                    });
+
+                    // Define a imagem do canal ou um ícone padrão
+                    var img = card.find('.card__img');
+                    if (canal.img) {
+                        img.attr('src', canal.img);
+                    } else {
+                        img.attr('src', 'https://placeholder.com' + encodeURIComponent(canal.title));
+                    }
+
+                    // Ação ao apertar OK / Enter no controle remoto
+                    card.on('hover:enter', function () {
+                        Lampa.Player.play({
+                            title: canal.title,
+                            url: canal.url
+                        });
+                    });
+
+                    card.on('hover:focus', function () {
+                        scroll.update(card, true);
+                    });
+
+                    html.append(card);
+                    itens.push(card);
+                });
+
+                scroll.append(html);
+                this.activity.toggle();
+            };
+
+            this.start = function () {
+                Lampa.Controller.add('content', {
+                    toggle: function () {
+                        Lampa.Controller.collectionSet(scroll.render());
+                        Lampa.Controller.collectionFocus(itens[0] ? itens[0][0] : false, scroll.render());
+                    },
+                    left: function () {
+                        if (Navigator.canmove('left')) Navigator.move('left');
+                        else Lampa.Controller.toggle('menu');
+                    },
+                    right: function () {
+                        Navigator.move('right');
+                    },
+                    up: function () {
+                        if (Navigator.canmove('up')) Navigator.move('up');
+                        else Lampa.Controller.toggle('head');
+                    },
+                    down: function () {
+                        Navigator.move('down');
+                    },
+                    back: function () {
+                        Lampa.Activity.backward();
+                    }
+                });
+                Lampa.Controller.toggle('content');
+            };
+
+            this.pause = function () {};
+            this.stop = function () {};
+            this.render = function () { return scroll.render(); };
+            this.destroy = function () {
+                scroll.destroy();
+                html.remove();
+            };
+        }
+
+        // Registra a tela no sistema do Lampa
+        Lampa.Component.add('tv_brasil_comp', TelaCanaisBR);
+
+        // 2. Adiciona o botão "TV Brasil" no menu lateral esquerdo
+        var botaoMenu = $(
+            '<li class="menu__item selector" data-action="tv_brasil">' +
+                '<div class="menu__ico">' +
+                    '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+                        '<rect x="2" y="7" width="20" height="15" rx="2" ry="2"></rect>' +
+                        '<polyline points="17 2 12 7 7 2"></polyline>' +
+                    '</svg>' +
+                '</div>' +
+                '<div class="menu__text">TV Brasil</div>' +
+            '</li>'
+        );
+
+        botaoMenu.on('hover:enter', function () {
+            Lampa.Activity.push({
+                url: '',
+                title: 'TV Brasil (Ao Vivo)',
+                component: 'tv_brasil_comp',
+                page: 1
+            });
+        });
+
+        $('.menu .menu__list').eq(0).append(botaoMenu);
+    }
+
+    // Inicia o plugin assim que o Lampa carregar
+    if (window.appready) {
+        iniciarTVBrasil();
+    } else {
+        Lampa.Listener.follow('app', function (evento) {
+            if (evento.type === 'ready') {
+                iniciarTVBrasil();
+            }
+        });
+    }
+})();
